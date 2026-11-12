@@ -1,0 +1,34 @@
+# Lista blanca: se ignora TODO y solo se publica lo indicado con "!".
+# Así no se sube nada privado (claves, respaldos del router, capturas, descargas).
+/*
+!/.gitignore
+!/README.md
+!/LICENSE
+!/docs/
+!/app/
+!/herramientas/
+
+# --- app: solo el código fuente y los recursos
+/app/*
+!/app/rv082/
+!/app/web/
+!/app/recursos/
+!/app/pruebas/
+!/app/servidor.py
+!/app/Panel del Router.pyw
+!/app/LEEME.txt
+# nunca: config.json / vpn.json (claves), respaldos/, descargas/, dist*/, .perfil-ventana/
+/app/pruebas/capturas/
+/app/recursos/logo-512.png
+
+# --- herramientas: solo los scripts de compilación (no el Python portable)
+/herramientas/*
+!/herramientas/compilar-32bits.ps1
+!/herramientas/compilar-64bits.ps1
+
+# --- en cualquier lado
+__pycache__/
+*.pyc
+*.parcial*
+*.exe
+*.spec

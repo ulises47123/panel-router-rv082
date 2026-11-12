@@ -1,0 +1,104 @@
+PANEL DEL ROUTER (Cisco/Linksys RV082) — interfaz en español
+=============================================================
+
+CÓMO ABRIRLO
+- Opción 1: doble clic en  dist32\PanelRouter.exe  (32 bits: anda en Windows de 32 y 64 bits;
+            no necesita Python; se puede copiar a otra PC)
+- Opción 2: doble clic en  "Panel del Router.pyw"  (usa el Python instalado)
+Se abre como una ventana propia (Edge/Chrome en modo aplicación). Al cerrar la
+ventana, el programa se cierra solo en ~1 minuto. Si ya estaba abierto, solo
+vuelve a mostrar la ventana.
+
+Requisito: la PC conectada por cable a un puerto LAN (1-8) del router.
+Por defecto entra a 192.168.1.1 con admin/admin; si cambia, el programa pide
+los datos (se guardan en config.json junto al programa).
+
+SECCIONES
+  Inicio ............ estado, internet, IPs, puertos con cable, firmware
+  Internet .......... automática (DHCP) / IP fija / PPPoE, DNS, MTU
+  Red local ......... IP y máscara del router, nombre, dominio
+  DHCP y equipos .... rango, tiempo, DNS, IP fija por equipo (reservas),
+                      equipos conectados (botón "Fijar IP")
+  Abrir puertos ..... reenvío por servicio o por número de puerto (crea el
+                      servicio solo), activar/desactivar/borrar, UPnP
+  Equipo expuesto ... DMZ host
+  Seguridad ......... SPI, DoS, bloquear pedidos de internet, multicast,
+                      administración remota (bloqueada con clave de fábrica),
+                      bloqueo de Java/cookies/ActiveX/proxy
+  Reglas de acceso .. permitir/bloquear por equipo o rango, servicio, destino,
+                      horario y días; activar/desactivar/borrar
+  Bloqueo de sitios . dominios y palabras, con horario y días
+  Ancho de banda .... velocidad real de la conexión + reglas de mínimo
+                      garantizado / máximo por equipo o rango, servicio y
+                      dirección (subida/bajada); activar/desactivar/borrar
+  Puertos ........... encender/apagar puertos 1-8, prioridad alta, detalle
+  Herramientas ...... ping, búsqueda DNS, registro del router
+  Sistema ........... contraseña, zona horaria/NTP, respaldo, reinicio
+  VPN ............... instala y configura SoftEther VPN Server en esta PC:
+                      1) descarga el instalador oficial (sitio de SoftEther o
+                         GitHub si está lento; reanuda cortes) y VERIFICA la
+                         firma digital (O=SOFTETHER CORPORATION)
+                      2) abre el instalador (UAC + Siguiente)
+                      3) "Configurar automáticamente": clave de admin aleatoria
+                         (vpn.json), VPN Azure, SSTP, puente a la placa
+                         conectada al router, nombre .vpnazure.net
+                      4) usuarios (crear / cambiar clave / borrar) y, por cada
+                         uno, "Archivo para su PC": .bat que crea la VPN SSTP
+                         en Windows 10 con un doble clic
+Cada sección tiene un botón "?" con la explicación.
+
+QUITADO A PROPÓSITO (no lo usa una empresa típica o es peligroso)
+  VPN router-router y router-PC (IPsec, QuickVPN, PPTP), ProtectLink, DDNS
+  (proveedores muertos), One-to-One NAT, subredes múltiples, Dual-WAN, RIP,
+  SNMP, clonar MAC, asistente, restaurar de fábrica, actualizar firmware,
+  restaurar respaldo (riesgo de dejar el equipo inutilizable).
+  QoS modo "por prioridad" (se usa el modo "por velocidad", más útil).
+
+SEGURIDAD DEL PROGRAMA
+- Antes de cada cambio guarda los valores anteriores de esa página en
+  respaldos\ (JSON con fecha). "Descargar respaldo" baja la config completa.
+- Cada guardado reproduce EXACTAMENTE el POST del navegador original:
+  24 operaciones comparadas campo por campo contra el JavaScript del router
+  (pruebas\validar.py, sin enviar nada al router) y todas las listas,
+  reglas, filtro, ancho de banda, WAN, DHCP, hora, puertos y clave probadas en vivo con
+  reversión.
+- Confirma antes de: cambiar IP del router, tipo de internet, apagar DHCP,
+  apagar un puerto con cable, bloquear a todos, reiniciar.
+
+32 Y 64 BITS
+- El .exe de 32 bits funciona en Windows de 32 y de 64 bits. Se compila con
+  ..\herramientas\compilar-32bits.ps1 (baja Python 3.12 x86 oficial de NuGet,
+  verifica firma y arquitectura, compila y confirma la cabecera PE = x86).
+- El panel busca programas en %ProgramW6432% además de %ProgramFiles%, porque
+  un proceso de 32 bits en Windows de 64 ve "Program Files (x86)".
+- El instalador de SoftEther (x86_x64) sirve para ambas arquitecturas.
+
+ESTRUCTURA
+  servidor.py ........ servidor local (127.0.0.1:8095) + API JSON
+  rv082\cliente.py ... lectura de formularios y envío idéntico al navegador
+  rv082\funciones.py . estado, internet, LAN, DHCP, puertos, diagnóstico, sistema
+  rv082\seguridad.py . reenvío, UPnP, DMZ, firewall, reglas, bloqueo de sitios
+  rv082ncho.py ..... control de ancho de banda (qos.htm)
+  rv082pn.py ....... SoftEther: descarga+firma, vpncmd, usuarios, .bat cliente
+  web\iconos\ ........ íconos SVG Lucide v0.468.0 (licencia ISC)
+  web\ ............... interfaz (index.html, app.js, estilos.css, ayudas.js)
+  pruebas\ ........... banco de pruebas (POST del navegador interceptado)
+  ..\investigacion\ .. especificaciones de cada página del router
+
+RECOMPILAR EL .EXE
+  cd app
+  python -m PyInstaller --noconfirm --onefile --noconsole --name PanelRouter ^
+     --add-data "%CD%\web;web" --distpath dist --workpath build\tmp --specpath build servidor.py
+
+DATOS DESCUBIERTOS DEL FIRMWARE (útiles si hay que tocar el código)
+- El HTML trae hidden con valores basura que el JS corrige al cargar
+  (LanIp1=196, portNDisabled=1, Wan1DnsNeq=0...). El programa replica esas
+  correcciones.
+- El router comenta (<!-- -->) bloques con campos duplicados: se ignoran.
+- Las listas (reservas, reenvíos, dominios...) se envían completas e
+  invertidas; si falta la lista, el router la borra.
+- Los servicios creados por el usuario reciben IDs NEGATIVOS (ej. -16777215).
+- Ping/DNS: el resultado llega recargando sys_diag.htm cada 2 s.
+- Clave: md5(clave_vieja + auth_key); la nueva viaja en texto plano.
+- QoS: el router rechaza mínimos/máximos mayores que la velocidad cargada;
+  al guardar se manda la opción 12 del selector de servicios (lo hace el JS).
