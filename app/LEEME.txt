@@ -113,5 +113,10 @@ DATOS DESCUBIERTOS DEL FIRMWARE (útiles si hay que tocar el código)
 - Los servicios creados por el usuario reciben IDs NEGATIVOS (ej. -16777215).
 - Ping/DNS: el resultado llega recargando sys_diag.htm cada 2 s.
 - Clave: md5(clave_vieja + auth_key); la nueva viaja en texto plano.
+- SoftEther: el panel lo administra por el puerto 443 y al configurar quita
+  el 5555, porque adb (Android) sondea 127.0.0.1:5555 buscando emuladores y
+  el anti-DoS de SoftEther bloquea entonces TODAS las conexiones locales
+  (se libera reiniciando el servicio "SoftEther VPN Server").
+- Datos compartidos por todas las versiones: %LOCALAPPDATA%\PanelRouter
 - QoS: el router rechaza mínimos/máximos mayores que la velocidad cargada;
   al guardar se manda la opción 12 del selector de servicios (lo hace el JS).

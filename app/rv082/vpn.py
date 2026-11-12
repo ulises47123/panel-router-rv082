@@ -193,13 +193,47 @@ def _servidor_tiene_clave() -> bool | None:
     return None
 
 
+# Puertos para administrar SoftEther. El 5555 va último: adb (Android) sondea
+# 127.0.0.1:5555 buscando emuladores y SoftEther lo toma como ataque DoS,
+# bloqueando TODAS las conexiones locales (incluido este panel).
+PUERTOS_ADMIN = ["443", "992", "5555"]
+_puerto_ok = {"p": None}
+_candado_vpncmd = threading.Lock()   # una conexión a la vez (evita ráfagas que disparan el anti-DoS)
+_ultima_conexion = {"t": 0.0}
+
+
 def _vpncmd(*comando: str, clave: str | None = None, hub: bool = False, csv_: bool = True, timeout=25) -> str:
     exe = _vpncmd_ruta()
     if not exe:
         raise ErrorVPN("SoftEther VPN Server no está instalado")
     if clave is None:
         clave = _leer_cfg().get("clave", "")
-    args = [exe, "localhost:5555", "/SERVER", f"/PASSWORD:{clave}"]
+    puertos = ([_puerto_ok["p"]] if _puerto_ok["p"] else []) + [p for p in PUERTOS_ADMIN if p != _puerto_ok["p"]]
+    ultimo_error = None
+    with _candado_vpncmd:
+        for puerto in puertos:
+            espera = 0.35 - (time.time() - _ultima_conexion["t"])
+            if espera > 0:
+                time.sleep(espera)
+            try:
+                out = _vpncmd_puerto(exe, puerto, comando, clave, hub, csv_, timeout)
+                _puerto_ok["p"] = puerto
+                return out
+            except _ErrorConexion as e:   # ese puerto no responde: probar el siguiente
+                ultimo_error = e
+            finally:
+                _ultima_conexion["t"] = time.time()
+    raise ErrorVPN("No se pudo conectar con SoftEther (puertos 443, 992 y 5555). "
+                   "Si en esta PC se usa adb o un emulador de Android, esperá un minuto y volvé a intentar. "
+                   f"({ultimo_error})")
+
+
+class _ErrorConexion(ErrorVPN):
+    pass
+
+
+def _vpncmd_puerto(exe, puerto, comando, clave, hub, csv_, timeout) -> str:
+    args = [exe, f"localhost:{puerto}", "/SERVER", f"/PASSWORD:{clave}"]
     if hub:
         # /ADMINHUB = administrar el Hub con la contraseña del SERVIDOR.
         # (/HUB: entraría como administrador del Hub y pediría la contraseña del Hub)
@@ -217,6 +251,13 @@ def _vpncmd(*comando: str, clave: str | None = None, hub: bool = False, csv_: bo
         linea = next((l for l in out.splitlines() if "Error" in l or "error" in l), out.strip()[-200:])
         if "Access has been denied" in out or "password" in out.lower() and "incorrect" in out.lower():
             raise ErrorVPN("La contraseña de administración de SoftEther no coincide (archivo vpn.json)")
+        # Error code 1 = puerto cerrado: se prueba el siguiente.
+        # Error code 2 = SoftEther cortó la conexión (anti-DoS): reintentar en otro puerto lo empeora.
+        if re.search(r"Error code: 1\)", out):
+            raise _ErrorConexion(linea.strip())
+        if re.search(r"Error code: 2\)", out):
+            raise ErrorVPN("SoftEther está rechazando conexiones de esta PC por su protección anti-ataques "
+                           "(suele pasar si se usa adb o un emulador de Android). Esperá 2 minutos y tocá Actualizar.")
         raise ErrorVPN(f"SoftEther respondió con error: {linea.strip()}")
     return out
 
@@ -224,6 +265,14 @@ def _vpncmd(*comando: str, clave: str | None = None, hub: bool = False, csv_: bo
 def _csv(out: str) -> list[list[str]]:
     filas = list(csv.reader(io.StringIO(out)))
     return [f for f in filas if f and any(c.strip() for c in f)]
+
+
+def _campo(d: dict, *claves: str) -> str:
+    """Valor del primer campo cuyo nombre contiene todas las palabras clave (sin mayúsculas)."""
+    for k, v in d.items():
+        if all(c.lower() in k.lower() for c in claves):
+            return v
+    return ""
 
 
 def _pares(out: str) -> dict:
@@ -402,15 +451,16 @@ def estado_vpn(_cli=None, _d=None) -> dict:
         res["adaptador"] = _adaptador_router()
         return res
     try:
+        # nombres reales verificados con SoftEther 4.41 (se buscan por palabras clave)
         az = _pares(_vpncmd("VpnAzureGetStatus"))
-        res["azure_activo"] = az.get("VPN Azure Function is Enabled", "").lower() == "yes"
-        res["azure_conectado"] = az.get("Connection to VPN Azure Cloud Server is Established", "").lower() == "yes"
-        res["direccion"] = az.get("Hostname of this VPN Server on VPN Azure Service", "")
+        res["azure_activo"] = _campo(az, "azure", "enabled").lower() == "yes"
+        res["azure_conectado"] = _campo(az, "established").lower() == "yes"
+        res["direccion"] = _campo(az, "hostname")
         dd = _pares(_vpncmd("DynamicDnsGetStatus"))
-        res["ip_publica"] = dd.get("Global IP Address (IPv4)", "")
-        res["nombre_ddns"] = dd.get("Assigned Dynamic DNS Hostname (Hostname only)", "")
+        res["ip_publica"] = _campo(dd, "ipv4")
+        res["nombre_ddns"] = _campo(dd, "hostname (hostname")
         sstp = _pares(_vpncmd("SstpGet"))
-        res["sstp"] = sstp.get("MS-SSTP VPN Clone Server Function Enabled", "").lower() == "yes"
+        res["sstp"] = _campo(sstp, "sstp", "enabled").lower() == "yes"
         puentes = _csv(_vpncmd("BridgeList"))
         res["puente"] = [{"hub": f[1], "adaptador": f[2], "estado": f[3]} for f in puentes[1:] if len(f) >= 4]
         res["usuarios"] = listar_usuarios()["usuarios"]
@@ -470,6 +520,13 @@ def configurar(_cli, d: dict) -> dict:
             raise _err(f"El nombre '{nombre}' no está disponible o no es válido; probá otro. ({e})")
     _vpncmd("VpnAzureSetEnable", "yes")
     pasos.append("VPN Azure activado")
+    try:  # 5555 no hace falta (VPN Azure y SSTP van por 443) y choca con adb/emuladores de Android
+        listeners = _csv(_vpncmd("ListenerList"))
+        if any(len(f) >= 1 and "5555" in f[0] for f in listeners[1:]):
+            _vpncmd("ListenerDelete", "5555")
+            pasos.append("Puerto 5555 desactivado (evita choques con adb y emuladores de Android)")
+    except ErrorVPN:
+        pass
     # puente al router
     ad = _adaptador_router()
     if ad:
@@ -496,9 +553,17 @@ def configurar(_cli, d: dict) -> dict:
 def listar_usuarios(_cli=None, _d=None) -> dict:
     filas = _csv(_vpncmd("UserList", hub=True))
     usuarios = []
+    if not filas:
+        return {"usuarios": usuarios}
+    # columnas reales: User Name, Full Name, Group Name, Description, Auth Method, Num Logins, Last Login, ...
+    cab = [c.strip().lower() for c in filas[0]]
+    col = lambda *claves, defecto: next((i for i, c in enumerate(cab) if all(k in c for k in claves)), defecto)
+    i_nom, i_acc, i_ult = col("user", "name", defecto=0), col("num", "login", defecto=5), col("last", "login", defecto=6)
     for f in filas[1:]:
-        if len(f) >= 7:
-            usuarios.append({"nombre": f[0], "ultimo_acceso": f[5] if f[5] != "(None)" else "Nunca", "accesos": f[6]})
+        if len(f) > max(i_nom, i_acc, i_ult):
+            ultimo = f[i_ult].strip()
+            usuarios.append({"nombre": f[i_nom], "accesos": f[i_acc],
+                             "ultimo_acceso": "Nunca" if ultimo in ("", "(None)", "None") else ultimo})
     return {"usuarios": usuarios}
 
 
