@@ -6,6 +6,7 @@ traduce cada acción a los formularios del router. Solo librería estándar.
 from __future__ import annotations
 
 import json
+import re
 import os
 import sys
 import threading
@@ -177,6 +178,8 @@ class Manejador(BaseHTTPRequestHandler):
                     c["clave"] = resultado.pop("clave")
                     c["usuario"] = resultado.pop("usuario") or c["usuario"]
                     guardar_config(c)
+                if accion == "fabrica":  # el router vuelve a sus valores de fábrica
+                    c = leer_config(); c.update(ip="192.168.1.1", usuario="admin", clave="admin"); guardar_config(c)
                 if accion == "lan" and resultado.get("nueva_ip"):
                     c = leer_config(); c["ip"] = resultado["nueva_ip"]; guardar_config(c)
             self._json(200, {"ok": True, "datos": resultado})
@@ -195,16 +198,78 @@ CARPETA_PERFIL = os.path.join(BASE, ".perfil-ventana")  # perfil propio: no toca
 _estado_app = {"srv": None, "url": "", "bandeja": None, "ventanas": [], "cerrando": False}
 
 
-def _navegador() -> str | None:
+CHROMIUM = ("msedge.exe", "chrome.exe", "brave.exe", "vivaldi.exe", "opera.exe", "browser.exe", "chromium.exe")
+FIREFOX = ("firefox.exe",)
+
+
+def _exe_predeterminado() -> str | None:
+    """Ejecutable del navegador predeterminado de Windows (el que eligió el usuario)."""
+    try:
+        import winreg
+        clave = r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice"
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, clave) as k:
+            progid = winreg.QueryValueEx(k, "ProgId")[0]
+        with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, progid + r"\shell\open\command") as k:
+            comando = winreg.QueryValueEx(k, "")[0]
+        m = re.match(r'\s*"([^"]+)"', comando) or re.match(r"\s*(\S+)", comando)
+        exe = m.group(1) if m else None
+        return exe if exe and os.path.isfile(exe) else None
+    except OSError:
+        return None
+
+
+def _exe_app_paths(nombre: str) -> str | None:
+    """Ruta registrada en "App Paths" (sirve para instalaciones en carpetas no estándar
+    o por usuario). Se miran HKCU y HKLM en las vistas de 64 y 32 bits."""
+    try:
+        import winreg
+    except ImportError:
+        return None
+    sub = r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths" + "\\" + nombre
+    for raiz in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        for vista in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
+            try:
+                with winreg.OpenKey(raiz, sub, 0, winreg.KEY_READ | vista) as k:
+                    exe = winreg.QueryValueEx(k, "")[0].strip('"')
+                    if os.path.isfile(exe):
+                        return exe
+            except OSError:
+                continue
+    return None
+
+
+def _navegador() -> tuple[str, str] | None:
+    """Devuelve (ejecutable, tipo) con tipo "chromium" o "firefox".
+    Orden: navegador predeterminado (si es compatible) > Edge > Chrome > Brave >
+    Vivaldi > Opera > Yandex > Chromium > Firefox. Busca en las carpetas típicas y en
+    el registro (App Paths), así funciona aunque solo esté instalado uno de ellos."""
+    pred = _exe_predeterminado()
+    if pred:
+        nombre = os.path.basename(pred).lower()
+        if nombre in CHROMIUM:
+            return pred, "chromium"
+        if nombre in FIREFOX:
+            return pred, "firefox"
     # %ProgramW6432% = "Program Files" real aunque el panel corra como 32 bits en Windows de 64
     raices = [os.environ.get(v) for v in ("ProgramFiles(x86)", "ProgramW6432", "ProgramFiles", "LocalAppData")]
-    # navegadores basados en Chromium (soportan --app y --user-data-dir), en orden de preferencia
-    relativos = [r"Microsoft\Edge\Application\msedge.exe", r"Google\Chrome\Application\chrome.exe",
-                 r"BraveSoftware\Brave-Browser\Application\brave.exe", r"Vivaldi\Application\vivaldi.exe",
-                 r"Chromium\Application\chrome.exe"]
-    for exe in (os.path.join(r, rel) for rel in relativos for r in raices if r):
-        if os.path.isfile(exe):
-            return exe
+    raices += [os.path.join(os.environ.get("LocalAppData", ""), "Programs")]
+    conocidos = [
+        ("msedge.exe", r"Microsoft\Edge\Application\msedge.exe", "chromium"),
+        ("chrome.exe", r"Google\Chrome\Application\chrome.exe", "chromium"),
+        ("brave.exe", r"BraveSoftware\Brave-Browser\Application\brave.exe", "chromium"),
+        ("vivaldi.exe", r"Vivaldi\Application\vivaldi.exe", "chromium"),
+        ("opera.exe", r"Opera\opera.exe", "chromium"),
+        ("browser.exe", r"Yandex\YandexBrowser\Application\browser.exe", "chromium"),
+        ("chrome.exe", r"Chromium\Application\chrome.exe", "chromium"),
+        ("firefox.exe", r"Mozilla Firefox\firefox.exe", "firefox"),
+    ]
+    for nombre, relativo, tipo in conocidos:
+        for r in raices:
+            if r and os.path.isfile(os.path.join(r, relativo)):
+                return os.path.join(r, relativo), tipo
+        exe = _exe_app_paths(nombre)
+        if exe:
+            return exe, tipo
     return None
 
 
@@ -223,30 +288,41 @@ def _tamano_ventana() -> tuple[int, int, int, int]:
 
 
 def abrir_ventana(url: str | None = None) -> None:
-    """Abre la interfaz como ventana de aplicación (Edge o Chrome en modo app) con un
-    perfil propio, así "Cerrar todo" puede cerrarla sin tocar el navegador del usuario."""
+    """Abre la interfaz en una ventana propia con un perfil separado del navegador del
+    usuario, así "Cerrar todo" puede cerrarla sin tocar sus pestañas.
+    - Chromium (Chrome, Edge, Brave...): modo aplicación (--app), sin barra de direcciones.
+    - Firefox: instancia aparte con perfil propio (-no-remote -profile)."""
     import subprocess
     url = url or _estado_app["url"]
-    exe = _navegador()
-    if not exe:
-        webbrowser.open(url)
+    nav = _navegador()
+    if not nav:
+        webbrowser.open(url)  # último recurso: el navegador que haya (no se podrá cerrar solo)
         return
+    exe, tipo = nav
     ancho, alto, x, y = _tamano_ventana()
-    p = subprocess.Popen([exe, f"--app={url}", f"--window-size={ancho},{alto}", f"--window-position={x},{y}",
-                          f"--user-data-dir={CARPETA_PERFIL}",
-                          "--no-first-run", "--no-default-browser-check", "--disable-features=Translate"])
+    if tipo == "chromium":
+        args = [exe, f"--app={url}", f"--window-size={ancho},{alto}", f"--window-position={x},{y}",
+                f"--user-data-dir={CARPETA_PERFIL}", "--no-first-run", "--no-default-browser-check",
+                "--disable-features=Translate"]
+    else:
+        perfil = CARPETA_PERFIL + "-firefox"
+        os.makedirs(perfil, exist_ok=True)
+        args = [exe, "-no-remote", "-profile", perfil, "-width", str(ancho), "-height", str(alto), "-new-window", url]
+    p = subprocess.Popen(args)
     _estado_app["ventanas"].append(p.pid)
 
 
 def _cerrar_ventanas() -> None:
-    """Cierra solo las ventanas del panel (las que usan su perfil propio)."""
+    """Cierra solo las ventanas del panel: cualquier proceso (de cualquier navegador)
+    que use la carpeta de perfil propia del panel."""
     import subprocess
     sin_ventana = 0x08000000
     for pid in _estado_app["ventanas"]:
         subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, creationflags=sin_ventana)
     marca = CARPETA_PERFIL.replace("'", "''")
-    cmd = ("Get-CimInstance Win32_Process -Filter \"Name='msedge.exe' OR Name='chrome.exe' OR Name='brave.exe' OR Name='vivaldi.exe'\" | "
-           f"Where-Object {{ $_.CommandLine -like '*{marca}*' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}")
+    cmd = ("Get-CimInstance Win32_Process | "
+           f"Where-Object {{ $_.CommandLine -like '*{marca}*' -and $_.ProcessId -ne $PID }} | "
+           "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }")
     env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
     subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd], capture_output=True,
                    creationflags=sin_ventana, env=env, timeout=30)

@@ -9,6 +9,15 @@ Se abre como una ventana propia (Edge/Chrome en modo aplicación). Al cerrar la
 ventana, el programa se cierra solo en ~1 minuto. Si ya estaba abierto, solo
 vuelve a mostrar la ventana.
 
+Para CERRARLO: ícono junto al reloj (puede estar en la flechita ^) → clic
+derecho → "Cerrar todo", o el botón "Cerrar panel" de la ventana.
+
+NAVEGADOR: la ventana usa el navegador predeterminado si es Chrome, Edge,
+Brave, Vivaldi, Opera o Yandex (modo aplicación, sin barra de direcciones);
+si no, el primero que encuentre (carpetas típicas y registro "App Paths").
+Con Firefox abre una instancia aparte. Siempre con un perfil propio, así
+"Cerrar todo" no toca tus pestañas.
+
 Requisito: la PC conectada por cable a un puerto LAN (1-8) del router.
 Por defecto entra a 192.168.1.1 con admin/admin; si cambia, el programa pide
 los datos (se guardan en config.json junto al programa).
@@ -33,7 +42,9 @@ SECCIONES
                       dirección (subida/bajada); activar/desactivar/borrar
   Puertos ........... encender/apagar puertos 1-8, prioridad alta, detalle
   Herramientas ...... ping, búsqueda DNS, registro del router
-  Sistema ........... contraseña, zona horaria/NTP, respaldo, reinicio
+  Sistema ........... contraseña, zona horaria/NTP, respaldo, reinicio y
+                      restaurar de fábrica (guarda un respaldo antes y pide
+                      escribir RESTAURAR)
   VPN ............... instala y configura SoftEther VPN Server en esta PC:
                       1) descarga el instalador oficial (sitio de SoftEther o
                          GitHub si está lento; reanuda cortes) y VERIFICA la
@@ -45,12 +56,14 @@ SECCIONES
                       4) usuarios (crear / cambiar clave / borrar) y, por cada
                          uno, "Archivo para su PC": .bat que crea la VPN SSTP
                          en Windows 10 con un doble clic
+                      5) "Desinstalar SoftEther": usa el desinstalador oficial
+                         registrado en Windows y CONSERVA el instalador descargado
 Cada sección tiene un botón "?" con la explicación.
 
 QUITADO A PROPÓSITO (no lo usa una empresa típica o es peligroso)
   VPN router-router y router-PC (IPsec, QuickVPN, PPTP), ProtectLink, DDNS
   (proveedores muertos), One-to-One NAT, subredes múltiples, Dual-WAN, RIP,
-  SNMP, clonar MAC, asistente, restaurar de fábrica, actualizar firmware,
+  SNMP, clonar MAC, asistente, actualizar firmware,
   restaurar respaldo (riesgo de dejar el equipo inutilizable).
   QoS modo "por prioridad" (se usa el modo "por velocidad", más útil).
 

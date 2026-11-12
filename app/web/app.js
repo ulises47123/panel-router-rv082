@@ -520,7 +520,11 @@ async function vSistema() {
       `<div class="botones"><a href="/api/respaldo" download><button class="prim">Descargar respaldo</button></a></div>
        <p class="desc" style="margin-top:10px">Además, este programa guarda automáticamente los valores de cada página antes de modificarla (carpeta <code>respaldos</code>).</p>`) +
     tarjeta("Reiniciar el router", "Internet se corta alrededor de 1 minuto.",
-      `<div class="botones"><button class="peligro" id="sReini">Reiniciar router</button></div>`);
+      `<div class="botones"><button class="peligro" id="sReini">Reiniciar router</button></div>`) +
+    tarjeta("Restaurar de fábrica", "Borra TODA la configuración del router y lo deja como nuevo.",
+      `<div class="aviso rojo">Se pierden: la conexión a internet configurada, reservas DHCP, puertos abiertos, reglas, bloqueos,
+       ancho de banda y la contraseña (vuelve a <code>admin</code> / <code>admin</code>). Antes de restaurar, el panel guarda un respaldo completo.</div>
+       <div class="botones"><button class="peligro" id="sFabrica">Restaurar de fábrica…</button></div>`);
   if (h.zona === "4") $("#sZona").insertAdjacentHTML("afterend", '<small style="color:var(--aviso)">La zona actual es la de fábrica (Pacífico, EE.UU.). Para Argentina elegí "Buenos Aires".</small>');
   $("#sClave").onclick = (e) => {
     if (!confirm("¿Cambiar la contraseña del router? Anotala antes de continuar.")) return;
@@ -538,6 +542,23 @@ async function vSistema() {
       const r = await api("reiniciar", { confirmo: true }); toast(r.mensaje, "ok");
       conectado(false, "Reiniciando…");
       setTimeout(() => ir("inicio"), 70000);
+    });
+  };
+  $("#sFabrica").onclick = () => {
+    abrirModal(`<h3>Restaurar el router de fábrica</h3>
+      <p>Esto <b>borra toda la configuración</b> del router. Después vas a tener que volver a configurar internet y lo demás.</p>
+      <ol><li>El panel descarga y guarda un <b>respaldo completo</b> (carpeta <code>respaldos</code>).</li>
+      <li>El router se restaura y se reinicia (1 o 2 minutos).</li>
+      <li>Vuelve a <code>192.168.1.1</code> con usuario <code>admin</code> y clave <code>admin</code>: el panel se reconecta solo.</li></ol>
+      <label class="campo"><span>Para confirmar escribí <code>RESTAURAR</code></span><input type="text" id="fabConf" autocomplete="off"></label>
+      <div class="botones"><button class="peligro" id="fabOk" disabled>Restaurar de fábrica</button><button onclick="cerrarModal()">Cancelar</button></div>`);
+    $("#fabConf").focus();
+    $("#fabConf").oninput = () => $("#fabOk").disabled = $("#fabConf").value.trim().toUpperCase() !== "RESTAURAR";
+    $("#fabOk").onclick = (e) => conBoton(e.target, async () => {
+      const r = await api("fabrica", { confirmacion: $("#fabConf").value });
+      $("#modalCuerpo").innerHTML = `<h3>Restaurando…</h3><p>${esc(r.mensaje)}</p><p class="desc">Respaldo guardado en:<br><code>${esc(r.respaldo)}</code></p>`;
+      conectado(false, "Restaurando…");
+      setTimeout(() => { cerrarModal(); ir("inicio"); }, 100000);
     });
   };
 }
@@ -611,8 +632,30 @@ async function vVpn() {
           <li>Inicio de sesión: <b>Nombre de usuario y contraseña</b> → el usuario y la clave de la tabla</li>
           <li>Guardar → <b>Conectar</b>. Para comprobar: abrir <code>http://192.168.1.1</code></li></ol>`);
   }
+  if (v.instalado && v.servicio !== "no_instalado") {
+    h += tarjeta("Desinstalar SoftEther", "Quita el servidor VPN de esta PC. El instalador descargado queda guardado para volver a instalar con un clic.",
+      `<div class="botones"><button class="peligro" id="vDesinst">Desinstalar SoftEther…</button></div>
+       <p class="desc" id="vDesEsperando" style="display:none;margin-top:10px">Esperando que termine la desinstalación…</p>`);
+  }
   C().innerHTML = h;
   $("#vAyuda")?.addEventListener("click", () => abrirModal(AYUDAS.vpn));
+  $("#vDesinst")?.addEventListener("click", () => {
+    abrirModal(`<h3>Desinstalar SoftEther VPN Server</h3>
+      <ul><li>Se desconectan las personas conectadas por VPN y se borran los usuarios de la VPN.</li>
+      <li><b>El instalador queda guardado</b>: después podés reinstalar desde esta misma sección.</li>
+      <li>Se abre el desinstalador de SoftEther (en inglés): aceptá el permiso de administrador, elegí desinstalar
+      <b>SoftEther VPN Server</b> y confirmá con <span class="tecla">Siguiente &gt;</span> / <span class="tecla">Sí</span> hasta terminar.</li></ul>
+      <div class="botones"><button class="peligro" id="vDesOk">Desinstalar</button><button onclick="cerrarModal()">Cancelar</button></div>`);
+    $("#vDesOk").onclick = (e) => conBoton(e.target, async () => {
+      const r = await api("vpn/desinstalar", { confirmo: true }); toast(r.mensaje, "ok"); cerrarModal();
+      $("#vDesEsperando").style.display = "";
+      clearInterval(sondeoVpn);
+      sondeoVpn = setInterval(async () => {
+        const s = await api("vpn/estado").catch(() => null);
+        if (s && s.servicio === "no_instalado") { clearInterval(sondeoVpn); toast("SoftEther desinstalado. El instalador sigue guardado.", "ok"); ir("vpn"); }
+      }, 4000);
+    });
+  });
   const pintarProg = (p) => {
     const box = $("#vProg"); if (!box) return;
     if (p.estado === "descargando") box.innerHTML = `<div style="background:var(--borde);border-radius:6px;height:10px;overflow:hidden"><div style="height:10px;width:${p.porcentaje}%;background:var(--acento)"></div></div><small class="desc">${p.porcentaje}% · ${(p.bytes / 1e6).toFixed(1)} MB${p.kbs ? " · " + p.kbs + " KB/s" : ""}${p.fuente ? " · desde " + esc(p.fuente) : ""}</small>`;

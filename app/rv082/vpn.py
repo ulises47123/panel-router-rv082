@@ -332,7 +332,13 @@ def _adaptador_router() -> dict | None:
 def estado_vpn(_cli=None, _d=None) -> dict:
     if _descarga["estado"] == "nada" and os.path.isfile(os.path.join(CARPETA_DESCARGAS, NOMBRE_INSTALADOR)):
         descargar(None)  # ya estaba bajado: verificar la firma y marcarlo listo
-    res = {"version": VERSION, "servicio": _servicio(), "instalado": bool(_vpncmd_ruta()),
+    servicio = _servicio()
+    if servicio == "no_instalado" and not _vpncmd_ruta() and os.path.exists(ARCHIVO_VPN):
+        try:
+            os.remove(ARCHIVO_VPN)  # SoftEther fue desinstalado: su contraseña ya no existe
+        except OSError:
+            pass
+    res = {"version": VERSION, "servicio": servicio, "instalado": bool(_vpncmd_ruta()),
            "configurado": bool(_leer_cfg().get("clave")), "descarga": progreso()}
     if res["servicio"] != "corriendo" or not res["configurado"]:
         res["adaptador"] = _adaptador_router()
@@ -485,6 +491,49 @@ def script_cliente(direccion: str, usuario: str) -> str:
             "pause\r\n")
 
 
+# ----------------------------------------------------------------------------
+# desinstalación (conserva el instalador descargado)
+# ----------------------------------------------------------------------------
+def _desinstalador() -> str | None:
+    """Comando de desinstalación que SoftEther registra en Windows. Se buscan las dos
+    vistas del registro (64 y 32 bits) para que funcione con el panel de 32 o 64 bits."""
+    import winreg
+    ruta = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
+    for vista in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
+        try:
+            raiz = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, ruta, 0, winreg.KEY_READ | vista)
+        except OSError:
+            continue
+        with raiz:
+            for i in range(winreg.QueryInfoKey(raiz)[0]):
+                try:
+                    with winreg.OpenKey(raiz, winreg.EnumKey(raiz, i)) as k:
+                        nombre = winreg.QueryValueEx(k, "DisplayName")[0]
+                        if "SoftEther VPN Server" in nombre:
+                            return winreg.QueryValueEx(k, "UninstallString")[0]
+                except OSError:
+                    continue
+    return None
+
+
+def desinstalar(_cli, d: dict) -> dict:
+    if not d.get("confirmo"):
+        raise _err("Falta confirmar la desinstalación")
+    cmd = _desinstalador()
+    if not cmd:
+        raise _err("No se encontró el desinstalador de SoftEther en Windows. "
+                   "Desinstalalo desde Configuración > Aplicaciones > SoftEther VPN Server.")
+    # separar ejecutable y argumentos:  "C:\...\vpnsetup.exe" /ARG
+    m = re.match(r'\s*"([^"]+)"\s*(.*)$', cmd) or re.match(r"\s*(\S+)\s*(.*)$", cmd)
+    exe, args = m.group(1), m.group(2)
+    import ctypes
+    r = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, args or None, os.path.dirname(exe), 1)
+    if r <= 32:
+        raise _err("No se pudo abrir el desinstalador (¿se rechazó el permiso de administrador?)")
+    return {"mensaje": "Se abrió el desinstalador de SoftEther. Aceptá el permiso y confirmá. "
+                       "El instalador queda guardado para volver a instalar cuando quieras."}
+
+
 ACCIONES = {
     ("GET", "vpn/estado"): estado_vpn,
     ("POST", "vpn/descargar"): descargar,
@@ -495,4 +544,5 @@ ACCIONES = {
     ("POST", "vpn/usuario/agregar"): agregar_usuario,
     ("POST", "vpn/usuario/clave"): clave_usuario,
     ("POST", "vpn/usuario/borrar"): borrar_usuario,
+    ("POST", "vpn/desinstalar"): desinstalar,
 }

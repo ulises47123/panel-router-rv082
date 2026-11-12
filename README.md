@@ -27,11 +27,11 @@ y traduce cada acción a los formularios del router.
 | Ancho de banda | Velocidad de la conexión y mínimos/máximos por equipo |
 | Puertos | Encender/apagar puertos, prioridad |
 | Herramientas | Ping, DNS y registro del router |
-| Sistema | Contraseña, hora, respaldo, reinicio |
-| **VPN** | Instala y configura SoftEther VPN Server con VPN Azure |
+| Sistema | Contraseña, hora, respaldo, reinicio, restaurar de fábrica (con respaldo previo y doble confirmación) |
+| **VPN** | Instala, configura y desinstala SoftEther VPN Server con VPN Azure (el instalador queda guardado) |
 
-Se quitaron a propósito: VPN router a router y router a PC (IPsec/PPTP/QuickVPN), ProtectLink, DDNS, Dual-WAN, SNMP,
-restaurar de fábrica y actualizar firmware.
+Se quitaron a propósito: VPN router a router y router a PC (IPsec/PPTP/QuickVPN), ProtectLink, DDNS, Dual-WAN, SNMP
+y actualizar firmware.
 
 ## VPN sin abrir puertos
 
@@ -54,7 +54,8 @@ En [**Releases**](../../releases) hay dos ejecutables (no necesitan Python):
 
 La PC tiene que estar conectada por cable a un puerto LAN del router. Al abrirlo aparece una ventana propia y un
 **ícono junto al reloj**: clic derecho → **Cerrar todo** para salir (o el botón *Cerrar panel* dentro de la ventana).
-Usa Edge, Chrome, Brave o Vivaldi como motor de la ventana.
+La ventana usa tu navegador predeterminado si es Chrome, Edge, Brave, Vivaldi, Opera o Yandex (o el primero que
+encuentre; con Firefox abre una instancia aparte), siempre con un perfil propio para no tocar tus pestañas.
 
 ### Desde el código
 

@@ -699,6 +699,30 @@ def descargar_respaldo(cli: ClienteRV082) -> tuple[bytes, str]:
     return contenido, time.strftime("RV082-respaldo-%Y%m%d-%H%M.exp")
 
 
+def restaurar_fabrica(cli: ClienteRV082, d: dict) -> dict:
+    """Vuelve el router a fábrica. Antes guarda un respaldo completo (.exp) por si
+    hay que recuperar la configuración. Exige escribir RESTAURAR."""
+    if (d.get("confirmacion") or "").strip().upper() != "RESTAURAR":
+        raise ErrorValidacion("Para confirmar escribí RESTAURAR")
+    import os
+    contenido, nombre = descargar_respaldo(cli)          # si falla, no se restaura nada
+    carpeta = cli.carpeta_respaldos or "."
+    os.makedirs(carpeta, exist_ok=True)
+    ruta = os.path.join(carpeta, "ANTES-DE-FABRICA-" + nombre)
+    with open(ruta, "wb") as fh:
+        fh.write(contenido)
+    f = cli.formulario("sys_factory.htm")                 # form sin nombre: page + factory
+    if f.valor("factory") is None:
+        raise ErrorRouter("No se encontró el formulario de restaurar de fábrica")
+    try:
+        cli.enviar(f, respaldo=False)
+    except ErrorRouter:
+        pass  # el router corta la conexión al reiniciarse
+    return {"mensaje": "El router se está restaurando de fábrica (tarda 1 o 2 minutos). "
+                       "Vuelve a 192.168.1.1 con usuario admin y clave admin.",
+            "respaldo": ruta}
+
+
 def reiniciar(cli: ClienteRV082, d: dict) -> dict:
     if not d.get("confirmo"):
         raise ErrorValidacion("Falta confirmar el reinicio")
@@ -728,6 +752,7 @@ ACCIONES = {
     ("POST", "clave"): cambiar_clave,
     ("GET", "hora"): leer_hora, ("POST", "hora"): guardar_hora,
     ("POST", "reiniciar"): reiniciar,
+    ("POST", "fabrica"): restaurar_fabrica,
 }
 if _seg is not None:
     ACCIONES.update(_seg.ACCIONES)
