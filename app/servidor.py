@@ -25,8 +25,9 @@ from rv082 import vpn  # noqa: E402
 
 PUERTO = 8095
 CARPETA_WEB = os.path.join(RECURSOS, "web")
-ARCHIVO_CONFIG = os.path.join(BASE, "config.json")
-CARPETA_RESPALDOS = os.path.join(BASE, "respaldos")
+from rv082 import datos  # noqa: E402  carpeta común %LOCALAPPDATA%\PanelRouter
+ARCHIVO_CONFIG = datos.ruta("config.json")
+CARPETA_RESPALDOS = datos.ruta("respaldos")
 
 TIPOS = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
          ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon"}
@@ -194,7 +195,7 @@ class Manejador(BaseHTTPRequestHandler):
             self._json(500, {"ok": False, "error": f"Error interno: {e}"})
 
 
-CARPETA_PERFIL = os.path.join(BASE, ".perfil-ventana")  # perfil propio: no toca el navegador del usuario
+CARPETA_PERFIL = datos.ruta("perfil-ventana")  # perfil propio: no toca el navegador del usuario
 _estado_app = {"srv": None, "url": "", "bandeja": None, "ventanas": [], "cerrando": False}
 
 

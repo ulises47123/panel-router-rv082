@@ -597,6 +597,24 @@ async function vVpn() {
        <p class="desc" id="vEsperando" style="display:none">Esperando que termine la instalación…</p>`);
   } else if (v.servicio !== "corriendo") {
     h += `<div class="aviso amarillo">SoftEther está instalado pero el servicio está detenido. Reiniciá la PC o iniciá el servicio "SoftEther VPN Server" en Servicios de Windows.</div>`;
+  } else if (!v.configurado && v.instalador_abierto) {
+    h += tarjeta(`Paso 2 · Configurar ${cab}`, "",
+      `<div class="aviso amarillo"><b>El instalador de SoftEther sigue abierto.</b> Terminalo (botón <span class="tecla">Finalizar</span>) y el panel continúa solo.</div>`);
+    sondeoVpn = setInterval(async () => {
+      const s = await api("vpn/estado").catch(() => null);
+      if (s && !s.instalador_abierto) { clearInterval(sondeoVpn); ir("vpn"); }
+    }, 3000);
+  } else if (!v.configurado && v.tiene_clave) {
+    h += tarjeta(`Paso 2 · Recuperar el acceso a SoftEther ${cab}`, "",
+      `<div class="aviso amarillo">El servidor SoftEther tiene una <b>contraseña de administración que el panel no conoce</b>
+       (puede venir de un intento de configuración anterior o del Server Manager). Para seguir, el panel necesita acceso.</div>
+       <div class="paso"><div class="n">A</div><div><b>No sé cuál es / no puse ninguna</b> (recomendado)
+         <p>El panel deja la contraseña en blanco: detiene SoftEther unos segundos, cambia solo esa línea de su configuración
+         (guarda una copia antes) y lo vuelve a iniciar. Windows te pide permiso de administrador.</p>
+         <div class="botones"><button class="prim" id="vRestab">Restablecer acceso</button></div><div id="vRestabEst" class="desc" style="margin-top:8px"></div></div></div>
+       <div class="paso"><div class="n">B</div><div><b>Sé la contraseña</b>
+         <div class="fila-inputs" style="margin-top:6px">${campo("vClaveAdmin", "Contraseña de administración de SoftEther", "", "", "password")}<button id="vConf">Usar esta contraseña</button></div>
+         ${campo("vNom", "Nombre para la dirección", "", "ej. oficina-perez", "text", "opcional")}<div id="vPasos" style="margin-top:12px"></div></div></div>`);
   } else if (!v.configurado) {
     h += tarjeta(`Paso 2 · Configurar ${cab}`, "El panel deja todo listo: VPN Azure, SSTP (la VPN de Windows) y el puente a la red del router.",
       `<div class="campos">${campo("vNom", "Nombre para la dirección", "", "ej. oficina-perez", "text", "opcional: queda nombre.vpnazure.net")}</div>
@@ -686,16 +704,40 @@ async function vVpn() {
       $("#vEsperando").style.display = "";
       sondeoVpn = setInterval(async () => {
         const s = await api("vpn/estado").catch(() => null);
-        if (s && s.servicio === "corriendo") { clearInterval(sondeoVpn); toast("SoftEther instalado", "ok"); ir("vpn"); }
+        // esperar a que el servicio funcione Y el instalador se haya cerrado (el instalador reinicia el servicio al final)
+        if (s && s.servicio === "corriendo" && !s.instalador_abierto) { clearInterval(sondeoVpn); toast("SoftEther instalado", "ok"); ir("vpn"); }
       }, 4000);
     });
   });
   const configurar = (btn, nombre) => conBoton(btn, async () => {
-    const r = await api("vpn/configurar", { nombre });
-    if ($("#vPasos")) $("#vPasos").innerHTML = `<div class="aviso azul">${r.pasos.map(esc).join("<br>")}</div>`;
-    toast(r.mensaje, "ok"); setTimeout(() => ir("vpn"), 2500);
+    try {
+      const r = await api("vpn/configurar", { nombre, clave_admin: $("#vClaveAdmin") ? $("#vClaveAdmin").value : "" });
+      if ($("#vPasos")) $("#vPasos").innerHTML = `<div class="aviso azul">${r.pasos.map(esc).join("<br>")}</div>`;
+      toast(r.mensaje, "ok"); setTimeout(() => ir("vpn"), 2500);
+    } catch (er) {
+      // el servidor ya tenía contraseña: mostrar el campo para escribirla
+      if (/ya tiene una contraseña|no es correcta/.test(er.message)) {
+        if (/ya tiene una contraseña/.test(er.message)) { ir("vpn"); return; }  // muestra la pantalla de recuperar acceso
+        if ($("#vPasos")) $("#vPasos").innerHTML = `<div class="aviso amarillo">${esc(er.message)}</div>`;
+      }
+      throw er;
+    }
   });
   $("#vConf")?.addEventListener("click", (e) => configurar(e.target, val("vNom")));
+  $("#vRestab")?.addEventListener("click", (e) => conBoton(e.target, async () => {
+    const r = await api("vpn/restablecer", { confirmo: true });
+    $("#vRestabEst").textContent = r.mensaje + " Aceptá el permiso de administrador si Windows lo pide.";
+    clearInterval(sondeoVpn);
+    const inicio = Date.now();
+    sondeoVpn = setInterval(async () => {
+      const s = await api("vpn/estado").catch(() => null);
+      if (s && s.servicio === "corriendo" && !s.tiene_clave) {
+        clearInterval(sondeoVpn); toast("Acceso restablecido. Ya podés configurar.", "ok"); ir("vpn");
+      } else if (Date.now() - inicio > 90000) {
+        clearInterval(sondeoVpn); $("#vRestabEst").textContent = "No se completó. ¿Se rechazó el permiso de administrador? Probá de nuevo.";
+      }
+    }, 3000);
+  }));
   $("#vReconf")?.addEventListener("click", (e) => {
     const n = prompt("Nombre para la dirección (vacío = dejar el actual):", "");
     if (n === null) return; configurar(e.target, n.trim());

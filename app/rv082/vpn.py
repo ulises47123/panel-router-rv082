@@ -59,8 +59,9 @@ if getattr(sys, "frozen", False):
     BASE = os.path.dirname(os.path.abspath(sys.executable))
 else:
     BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ARCHIVO_VPN = os.path.join(BASE, "vpn.json")        # contraseña de administración de SoftEther
-CARPETA_DESCARGAS = os.path.join(BASE, "descargas")
+from . import datos  # noqa: E402  carpeta común a todas las versiones del panel
+ARCHIVO_VPN = datos.ruta("vpn.json")                # contraseña de administración de SoftEther
+CARPETA_DESCARGAS = datos.ruta("descargas")
 
 _descarga = {"estado": "nada", "bytes": 0, "total": 0, "error": "", "archivo": ""}
 
@@ -91,8 +92,10 @@ def _ejecutar(args, timeout=40, entrada=None) -> tuple[int, str]:
                            stdin=None if entrada is not None else subprocess.DEVNULL)
     except FileNotFoundError:
         raise ErrorVPN(f"No se encontró {args[0]}")
-    except subprocess.TimeoutExpired:
-        raise ErrorVPN("El comando tardó demasiado")
+    except subprocess.TimeoutExpired as e:
+        err = ErrorVPN("El comando tardó demasiado")
+        err.salida = ((e.stdout or b"") + (e.stderr or b"")).decode("utf-8", "replace")
+        raise err
     salida = (p.stdout or b"") + (p.stderr or b"")
     for cod in ("utf-8", "cp850", "latin-1"):
         try:
@@ -144,7 +147,53 @@ def _servicio() -> str:
     return "no_instalado"
 
 
-def _vpncmd(*comando: str, clave: str | None = None, hub: bool = False, csv_: bool = True, timeout=40) -> str:
+HASH_CLAVE_VACIA = "+WzqGYrR3VYXrAhKPZLGEHcIwO8="  # cómo guarda SoftEther una contraseña vacía
+MSJ_YA_TIENE_CLAVE = ("El servidor SoftEther ya tiene una contraseña de administración que el panel no conoce. "
+                      "Si no pusiste ninguna, tocá \"Restablecer acceso\" (pide permiso de administrador); "
+                      "si sí la pusiste, escribila abajo.")
+_desinstalando = {"activo": False}  # solo se archiva vpn.json cuando el usuario pidió desinstalar
+
+
+def _instalador_abierto() -> bool:
+    """¿Sigue abierto el instalador/desinstalador de SoftEther? (no hay que configurar mientras tanto:
+    el instalador arranca el servicio a mitad de camino y después lo reinicia)."""
+    out = _powershell("Get-Process | Where-Object { $_.Name -match '^(vpnsetup|instalador-softether)' } | "
+                      "Measure-Object | ForEach-Object { $_.Count }", timeout=20)
+    return out.strip() not in ("", "0")
+
+
+def _archivar_cfg() -> None:
+    """Nunca se borra la contraseña guardada: se renombra con la fecha."""
+    if os.path.exists(ARCHIVO_VPN):
+        destino = datos.ruta(time.strftime("vpn-anterior-%Y%m%d-%H%M%S.json"))
+        try:
+            os.replace(ARCHIVO_VPN, destino)
+        except OSError:
+            pass
+
+
+class ErrorPideClave(ErrorVPN):
+    """vpncmd se quedó pidiendo 'Password:' (la contraseña falta o es incorrecta)."""
+
+
+def _servidor_tiene_clave() -> bool | None:
+    """Mira en vpn_server.config si el servidor tiene contraseña de administración.
+    None si no se pudo leer el archivo."""
+    for carpeta in CARPETAS:
+        ruta = os.path.join(carpeta, "vpn_server.config")
+        try:
+            with open(ruta, encoding="utf-8", errors="replace") as f:
+                texto = f.read()
+        except OSError:
+            continue
+        bloque = texto.split("declare ServerConfiguration", 1)[-1]
+        m = re.search(r"byte HashedPassword (\S+)", bloque)
+        if m:
+            return m.group(1) != HASH_CLAVE_VACIA
+    return None
+
+
+def _vpncmd(*comando: str, clave: str | None = None, hub: bool = False, csv_: bool = True, timeout=25) -> str:
     exe = _vpncmd_ruta()
     if not exe:
         raise ErrorVPN("SoftEther VPN Server no está instalado")
@@ -152,11 +201,18 @@ def _vpncmd(*comando: str, clave: str | None = None, hub: bool = False, csv_: bo
         clave = _leer_cfg().get("clave", "")
     args = [exe, "localhost:5555", "/SERVER", f"/PASSWORD:{clave}"]
     if hub:
-        args.append(f"/HUB:{HUB}")
+        # /ADMINHUB = administrar el Hub con la contraseña del SERVIDOR.
+        # (/HUB: entraría como administrador del Hub y pediría la contraseña del Hub)
+        args.append(f"/ADMINHUB:{HUB}")
     if csv_:
         args.append("/CSV")
     args += ["/CMD"] + list(comando)
-    cod, out = _ejecutar(args, timeout=timeout)
+    try:
+        cod, out = _ejecutar(args, timeout=timeout)
+    except ErrorVPN as e:
+        if "Password:" in getattr(e, "salida", ""):
+            raise ErrorPideClave("SoftEther pide una contraseña de administración distinta")
+        raise
     if cod != 0:
         linea = next((l for l in out.splitlines() if "Error" in l or "error" in l), out.strip()[-200:])
         if "Access has been denied" in out or "password" in out.lower() and "incorrect" in out.lower():
@@ -315,7 +371,7 @@ def _adaptador_router() -> dict | None:
     """Placa de red de esta PC que está en la red del router (192.168.1.x por defecto)."""
     cfg_router = {}
     try:
-        with open(os.path.join(BASE, "config.json"), encoding="utf-8") as f:
+        with open(datos.ruta("config.json"), encoding="utf-8") as f:
             cfg_router = json.load(f)
     except (OSError, ValueError):
         pass
@@ -333,13 +389,15 @@ def estado_vpn(_cli=None, _d=None) -> dict:
     if _descarga["estado"] == "nada" and os.path.isfile(os.path.join(CARPETA_DESCARGAS, NOMBRE_INSTALADOR)):
         descargar(None)  # ya estaba bajado: verificar la firma y marcarlo listo
     servicio = _servicio()
-    if servicio == "no_instalado" and not _vpncmd_ruta() and os.path.exists(ARCHIVO_VPN):
-        try:
-            os.remove(ARCHIVO_VPN)  # SoftEther fue desinstalado: su contraseña ya no existe
-        except OSError:
-            pass
+    if _desinstalando["activo"] and servicio == "no_instalado" and not _vpncmd_ruta():
+        _archivar_cfg()                       # desinstalación pedida por el usuario: terminó
+        _desinstalando["activo"] = False
+    instalador = _instalador_abierto()
     res = {"version": VERSION, "servicio": servicio, "instalado": bool(_vpncmd_ruta()),
-           "configurado": bool(_leer_cfg().get("clave")), "descarga": progreso()}
+           "configurado": bool(_leer_cfg().get("clave")), "descarga": progreso(),
+           "instalador_abierto": instalador}
+    if res["instalado"] and servicio == "corriendo" and not res["configurado"]:
+        res["tiene_clave"] = bool(_servidor_tiene_clave())
     if res["servicio"] != "corriendo" or not res["configurado"]:
         res["adaptador"] = _adaptador_router()
         return res
@@ -366,22 +424,36 @@ def configurar(_cli, d: dict) -> dict:
     """Deja el servidor listo: clave de admin, VPN Azure, SSTP, puente y nombre."""
     if _servicio() != "corriendo":
         raise _err("El servicio de SoftEther no está funcionando. Terminá la instalación primero.")
+    if _instalador_abierto():
+        raise _err("El instalador de SoftEther sigue abierto. Terminá la instalación (Finalizar) y después configurá.")
     nombre = re.sub(r"[^a-z0-9-]", "", (d.get("nombre") or "").lower())[:30]
     if d.get("nombre") and len(nombre) < 3:
         raise _err("El nombre debe tener al menos 3 letras o números (ej. oficina-perez)")
     cfg = _leer_cfg()
     pasos = []
     if not cfg.get("clave"):
-        # recién instalado: el servidor no tiene contraseña de administración
-        clave = _clave_aleatoria()
-        try:
-            _vpncmd("ServerPasswordSet", clave, clave="", csv_=False)
-        except ErrorVPN as e:
-            raise _err("No se pudo poner la contraseña de administración: el servidor ya tenía una. "
-                       "Escribila en vpn.json o reinstalá SoftEther. (" + str(e) + ")")
-        cfg["clave"] = clave
-        _guardar_cfg(cfg)
-        pasos.append("Contraseña de administración creada (guardada en vpn.json)")
+        clave_admin = d.get("clave_admin") or ""
+        if clave_admin:
+            # el usuario ya le había puesto una contraseña (Server Manager): verificarla
+            try:
+                _vpncmd("ServerInfoGet", clave=clave_admin, timeout=8)
+            except ErrorPideClave:
+                raise _err("Esa contraseña de administración de SoftEther no es correcta. Probá de nuevo.")
+            cfg["clave"] = clave_admin
+            _guardar_cfg(cfg)
+            pasos.append("Se usa la contraseña de administración que ya tenía el servidor (guardada en vpn.json)")
+        elif _servidor_tiene_clave():
+            raise _err(MSJ_YA_TIENE_CLAVE)
+        else:
+            # recién instalado: el servidor no tiene contraseña; el panel crea una al azar
+            clave = _clave_aleatoria()
+            try:
+                _vpncmd("ServerPasswordSet", clave, clave="", csv_=False, timeout=15)
+            except ErrorPideClave:
+                raise _err(MSJ_YA_TIENE_CLAVE)
+            cfg["clave"] = clave
+            _guardar_cfg(cfg)
+            pasos.append("Contraseña de administración creada (guardada en vpn.json)")
     # Hub DEFAULT: sin SecureNAT (usamos el DHCP del router a través del puente)
     try:
         _vpncmd("SecureNatDisable", hub=True)
@@ -530,8 +602,47 @@ def desinstalar(_cli, d: dict) -> dict:
     r = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, args or None, os.path.dirname(exe), 1)
     if r <= 32:
         raise _err("No se pudo abrir el desinstalador (¿se rechazó el permiso de administrador?)")
+    _desinstalando["activo"] = True
     return {"mensaje": "Se abrió el desinstalador de SoftEther. Aceptá el permiso y confirmá. "
                        "El instalador queda guardado para volver a instalar cuando quieras."}
+
+
+def restablecer_acceso(_cli, d: dict) -> dict:
+    """Deja en blanco la contraseña de administración de SoftEther (para cuando nadie la
+    conoce). Con permiso de administrador: detiene el servicio, cambia el hash guardado
+    en vpn_server.config por el de "contraseña vacía" y lo vuelve a iniciar.
+    Solo toca esa línea (la del servidor); los usuarios y el resto quedan igual."""
+    if not d.get("confirmo"):
+        raise _err("Falta confirmar")
+    config = next((os.path.join(c, "vpn_server.config") for c in CARPETAS
+                   if os.path.isfile(os.path.join(c, "vpn_server.config"))), None)
+    if not config:
+        raise _err("No se encontró la configuración de SoftEther (vpn_server.config)")
+    script = os.path.join(CARPETA_DESCARGAS, "restablecer-acceso-softether.ps1")
+    os.makedirs(CARPETA_DESCARGAS, exist_ok=True)
+    ruta_ps = config.replace("'", "''")
+    contenido = (
+        "$ErrorActionPreference = 'Stop'\r\n"
+        f"$cfg = '{ruta_ps}'\r\n"
+        "Stop-Service SEVPNSERVER -Force\r\n"
+        "Start-Sleep -Seconds 2\r\n"
+        "Copy-Item $cfg ($cfg + '.antes-de-restablecer') -Force\r\n"
+        "$t = [IO.File]::ReadAllText($cfg)\r\n"
+        "$i = $t.IndexOf('declare ServerConfiguration')\r\n"
+        "if ($i -lt 0) { throw 'No se encontró ServerConfiguration' }\r\n"
+        "$re = [regex]'byte HashedPassword \\S+'\r\n"
+        f"$t = $t.Substring(0, $i) + $re.Replace($t.Substring($i), 'byte HashedPassword {HASH_CLAVE_VACIA}', 1)\r\n"
+        "[IO.File]::WriteAllText($cfg, $t, (New-Object Text.UTF8Encoding($false)))\r\n"
+        "Start-Service SEVPNSERVER\r\n")
+    with open(script, "w", encoding="utf-8-sig") as f:
+        f.write(contenido)
+    import ctypes
+    r = ctypes.windll.shell32.ShellExecuteW(None, "runas", "powershell.exe",
+                                            f'-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{script}"', None, 0)
+    if r <= 32:
+        raise _err("No se pudo restablecer (¿se rechazó el permiso de administrador?)")
+    _archivar_cfg()
+    return {"mensaje": "Restableciendo el acceso a SoftEther (unos segundos)…"}
 
 
 ACCIONES = {
@@ -545,4 +656,5 @@ ACCIONES = {
     ("POST", "vpn/usuario/clave"): clave_usuario,
     ("POST", "vpn/usuario/borrar"): borrar_usuario,
     ("POST", "vpn/desinstalar"): desinstalar,
+    ("POST", "vpn/restablecer"): restablecer_acceso,
 }
